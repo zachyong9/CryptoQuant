@@ -1,0 +1,7 @@
+streamlit
+pandas
+plotly
+web3
+requests
+numpy
+hexbytes

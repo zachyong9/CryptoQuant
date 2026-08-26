@@ -1,0 +1,306 @@
+# -*- coding: utf-8 -*-
+import streamlit as st
+import pandas as pd
+import numpy as np
+import requests
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime
+
+st.set_page_config(
+    page_title="Crypto Radar - 主流币多因子量化监控中心",
+    page_icon="📈",
+    layout="wide"
+)
+
+# 自定义科技风 CSS
+st.markdown("""
+<style>
+    .coin-card {
+        background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
+        border: 1px solid #374151;
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin-bottom: 10px;
+    }
+    .coin-name { font-size: 13px; color: #9CA3AF; font-weight: 600; }
+    .coin-price { font-size: 20px; font-weight: 700; color: #F9FAFB; margin: 2px 0; }
+    .badge-up { color: #10B981; font-weight: 600; font-size: 12px; }
+    .badge-down { color: #EF4444; font-weight: 600; font-size: 12px; }
+    .metric-box {
+        background: #1e2638;
+        border: 1px solid #374151;
+        border-radius: 8px;
+        padding: 12px;
+        text-align: center;
+    }
+    .metric-box-title { font-size: 12px; color: #9CA3AF; margin-bottom: 4px; }
+    .metric-box-val { font-size: 18px; font-weight: 700; }
+</style>
+""", unsafe_allow_html=True)
+
+TRACK_COINS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "DOGE-USDT", "XRP-USDT"]
+
+# 侧边栏配置
+st.sidebar.title("🎛️ 监控与策略参数")
+selected_coin = st.sidebar.selectbox("当前深度分析币种", TRACK_COINS, index=0)
+selected_bar = st.sidebar.selectbox("K线周期", ["15m", "1H", "4H", "1D"], index=0)
+limit_k = st.sidebar.slider("历史 K 线分析数量", min_value=100, max_value=500, value=300, step=50)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("均线策略参数")
+fast_ma = st.sidebar.number_input("快线周期 (Fast MA)", min_value=3, max_value=60, value=17)
+slow_ma = st.sidebar.number_input("慢线周期 (Slow MA)", min_value=5, max_value=120, value=30)
+
+fee_rate = 0.0005 # 0.05%
+slippage = 0.0002 # 0.02%
+
+@st.cache_data(ttl=15)
+def fetch_kline_data(inst_id, bar="15m", limit=200):
+    """从 OKX 获取 K 线数据并计算基础指标"""
+    url = "https://www.okx.com/api/v5/market/candles"
+    params = {"instId": inst_id, "bar": bar, "limit": limit}
+    try:
+        res = requests.get(url, params=params, timeout=5)
+        data = res.json()
+        if data.get("code") != "0" or not data.get("data"):
+            return None
+        df = pd.DataFrame(data["data"], columns=[
+            "ts", "open", "high", "low", "close", "vol", "volCcy", "volCcyQuote", "confirm"
+        ]).iloc[::-1].reset_index(drop=True)
+
+        df["time"] = pd.to_datetime(df["ts"].astype(int), unit="ms")
+        for col in ["open", "high", "low", "close", "vol"]:
+            df[col] = df[col].astype(float)
+
+        # 1. 计算均线
+        df["MA_Fast"] = df["close"].rolling(fast_ma).mean()
+        df["MA_Slow"] = df["close"].rolling(slow_ma).mean()
+
+        # 2. 计算 RSI (14)
+        delta = df["close"].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / (loss + 1e-9)
+        df["RSI"] = 100 - (100 / (1 + rs))
+
+        # 3. 计算布林带 (20, 2)
+        df["BOLL_MID"] = df["close"].rolling(20).mean()
+        df["BOLL_STD"] = df["close"].rolling(20).std()
+        df["BOLL_UP"] = df["BOLL_MID"] + 2 * df["BOLL_STD"]
+        df["BOLL_LOW"] = df["BOLL_MID"] - 2 * df["BOLL_STD"]
+
+        return df
+    except Exception:
+        return None
+
+# 顶部标题
+st.title("📈 Crypto Radar - 主流币多因子量化监控与深度回测")
+st.caption(f"全市场主流资产实时流 · 分析标的: {selected_coin} · 周期: {selected_bar} · 模型: MA{fast_ma} / MA{slow_ma}")
+
+# 顶部币种多资产卡片网格
+cols = st.columns(len(TRACK_COINS))
+market_summary = []
+
+for i, coin in enumerate(TRACK_COINS):
+    c_df = fetch_kline_data(coin, bar=selected_bar, limit=50)
+    with cols[i]:
+        if c_df is not None and len(c_df) >= 2:
+            latest = c_df.iloc[-1]
+            prev = c_df.iloc[-2]
+            chg = ((latest["close"] - prev["close"]) / prev["close"]) * 100
+            chg_cls = "badge-up" if chg >= 0 else "badge-down"
+            chg_sign = "+" if chg >= 0 else ""
+            ma_status = "金叉做多 🟢" if latest["MA_Fast"] > latest["MA_Slow"] else "死叉空仓 🔴"
+
+            st.markdown(f"""
+            <div class="coin-card">
+                <div class="coin-name">{coin.replace('-USDT', '')} / USDT</div>
+                <div class="coin-price">${latest['close']:,.2f}</div>
+                <div><span class="{chg_cls}">{chg_sign}{chg:.2f}%</span> <span style="font-size:11px;color:#9CA3AF;float:right;">RSI: {latest['RSI']:.0f}</span></div>
+                <div style="font-size:11px;margin-top:4px;color:#D1D5DB;">状态: {ma_status}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            market_summary.append({
+                "币种": coin,
+                "现价 ($)": f"{latest['close']:,.2f}",
+                "周期涨跌": f"{chg_sign}{chg:.2f}%",
+                "RSI(14)": f"{latest['RSI']:.1f}",
+                "信号判定": "多头偏强 🟢" if latest["MA_Fast"] > latest["MA_Slow"] else "空头偏弱 🔴"
+            })
+
+st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+
+# 深度图表与专业量化回测
+df = fetch_kline_data(selected_coin, bar=selected_bar, limit=limit_k)
+
+if df is not None and len(df) > slow_ma:
+    # 策略信号生成
+    df["Signal"] = 0
+    df.loc[df["MA_Fast"] > df["MA_Slow"], "Signal"] = 1
+    df["Position"] = df["Signal"].diff()
+
+    buy_signals = df[df["Position"] == 1]
+    sell_signals = df[df["Position"] == -1]
+
+    # 回测撮合引擎与绩效统计
+    capital = 10000.0
+    holding = 0.0
+    entry_price = 0.0
+    entry_time = None
+    equity_curve = []
+    round_trades = []
+
+    for idx, row in df.iterrows():
+        p = row["close"]
+        t = row["time"]
+        if row["Position"] == 1 and holding == 0:
+            actual_buy = p * (1 + slippage)
+            fee = capital * fee_rate
+            holding = (capital - fee) / actual_buy
+            entry_price = actual_buy
+            entry_time = t
+            capital = 0.0
+        elif row["Position"] == -1 and holding > 0:
+            actual_sell = p * (1 - slippage)
+            proceeds = holding * actual_sell
+            fee = proceeds * fee_rate
+            capital = proceeds - fee
+            profit_pct = ((actual_sell - entry_price) / entry_price) * 100
+            profit_usdt = proceeds - 10000.0 if len(round_trades) == 0 else proceeds - round_trades[-1]['capital_after']
+            
+            round_trades.append({
+                "买入时间": entry_time.strftime('%m-%d %H:%M'),
+                "卖出时间": t.strftime('%m-%d %H:%M'),
+                "开仓价": f"${entry_price:,.2f}",
+                "平仓价": f"${actual_sell:,.2f}",
+                "收益率": profit_pct,
+                "展示收益率": f"{profit_pct:+.2f}%",
+                "盈亏状态": "盈利 🟢" if profit_pct > 0 else "亏损 🔴",
+                "capital_after": capital
+            })
+            holding = 0.0
+
+        current_val = capital if holding == 0 else holding * p
+        equity_curve.append(current_val)
+
+    df["Equity"] = equity_curve
+    final_val = equity_curve[-1]
+    strat_ret = ((final_val - 10000.0) / 10000.0) * 100
+    peak = df["Equity"].cummax()
+    max_dd = ((df["Equity"] - peak) / peak).min() * 100
+
+    # 计算胜率与盈亏比
+    total_trades = len(round_trades)
+    if total_trades > 0:
+        win_trades = [t for t in round_trades if t["收益率"] > 0]
+        loss_trades = [t for t in round_trades if t["收益率"] <= 0]
+        win_rate = (len(win_trades) / total_trades) * 100
+        
+        avg_win = np.mean([t["收益率"] for t in win_trades]) if len(win_trades) > 0 else 0.0
+        avg_loss = abs(np.mean([t["收益率"] for t in loss_trades])) if len(loss_trades) > 0 else 1e-9
+        profit_loss_ratio = avg_win / avg_loss if avg_loss > 0 else avg_win
+    else:
+        win_rate = 0.0
+        profit_loss_ratio = 0.0
+
+    # 左右两栏布局
+    chart_col, stat_col = st.columns([2.3, 1.2])
+
+    with chart_col:
+        st.subheader(f"📊 {selected_coin} 多因子技术图表")
+        
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            row_heights=[0.6, 0.2, 0.2]
+        )
+
+        # 1. 蜡烛图与均线
+        fig.add_trace(go.Candlestick(
+            x=df["time"], open=df["open"], high=df["high"],
+            low=df["low"], close=df["close"], name="K线"
+        ), row=1, col=1)
+
+        fig.add_trace(go.Scatter(x=df["time"], y=df["MA_Fast"], line=dict(color="#F59E0B", width=1.5), name=f"MA{fast_ma}"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df["time"], y=df["MA_Slow"], line=dict(color="#3B82F6", width=1.5), name=f"MA{slow_ma}"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df["time"], y=df["BOLL_UP"], line=dict(color="rgba(156, 163, 175, 0.3)", width=1, dash="dot"), name="布林上轨"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df["time"], y=df["BOLL_LOW"], line=dict(color="rgba(156, 163, 175, 0.3)", width=1, dash="dot"), name="布林下轨"), row=1, col=1)
+
+        # 买卖三角标记
+        if not buy_signals.empty:
+            fig.add_trace(go.Scatter(
+                x=buy_signals["time"], y=buy_signals["low"] * 0.995,
+                mode="markers", marker=dict(symbol="triangle-up", size=10, color="#10B981"),
+                name="买入信号"
+            ), row=1, col=1)
+
+        if not sell_signals.empty:
+            fig.add_trace(go.Scatter(
+                x=sell_signals["time"], y=sell_signals["high"] * 1.005,
+                mode="markers", marker=dict(symbol="triangle-down", size=10, color="#EF4444"),
+                name="卖出信号"
+            ), row=1, col=1)
+
+        # 2. 成交量
+        colors = ['#10B981' if c >= o else '#EF4444' for c, o in zip(df['close'], df['open'])]
+        fig.add_trace(go.Bar(x=df["time"], y=df["vol"], marker_color=colors, name="成交量"), row=2, col=1)
+
+        # 3. RSI
+        fig.add_trace(go.Scatter(x=df["time"], y=df["RSI"], line=dict(color="#8B5CF6", width=1.5), name="RSI(14)"), row=3, col=1)
+        fig.add_hline(y=70, line=dict(color="#EF4444", width=1, dash="dash"), row=3, col=1)
+        fig.add_hline(y=30, line=dict(color="#10B981", width=1, dash="dash"), row=3, col=1)
+
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#111827",
+            plot_bgcolor="#111827",
+            height=620,
+            margin=dict(l=20, r=20, t=10, b=10),
+            xaxis_rangeslider_visible=False
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with stat_col:
+        st.subheader("🎯 专业量化策略绩效看板")
+        
+        # 6 大核心绩效指标卡（2行3列网格）
+        m_row1_c1, m_row1_c2, m_row1_c3 = st.columns(3)
+        ret_color = "#10B981" if strat_ret >= 0 else "#EF4444"
+        with m_row1_c1:
+            st.markdown(f'<div class="metric-box"><div class="metric-box-title">策略净收益率</div><div class="metric-box-val" style="color:{ret_color}">{strat_ret:+.2f}%</div></div>', unsafe_allow_html=True)
+        with m_row1_c2:
+            st.markdown(f'<div class="metric-box"><div class="metric-box-title">最终账户总资产</div><div class="metric-box-val" style="color:#F9FAFB">${final_val:,.0f}</div></div>', unsafe_allow_html=True)
+        with m_row1_c3:
+            st.markdown(f'<div class="metric-box"><div class="metric-box-title">最大资金回撤</div><div class="metric-box-val" style="color:#EF4444">{max_dd:.2f}%</div></div>', unsafe_allow_html=True)
+
+        st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
+        m_row2_c1, m_row2_c2, m_row2_c3 = st.columns(3)
+        with m_row2_c1:
+            st.markdown(f'<div class="metric-box"><div class="metric-box-title">总交易轮数</div><div class="metric-box-val" style="color:#60A5FA">{total_trades} 轮</div></div>', unsafe_allow_html=True)
+        with m_row2_c2:
+            win_color = "#10B981" if win_rate >= 50 else "#F59E0B"
+            st.markdown(f'<div class="metric-box"><div class="metric-box-title">交易胜率 (Win%)</div><div class="metric-box-val" style="color:{win_color}">{win_rate:.1f}%</div></div>', unsafe_allow_html=True)
+        with m_row2_c3:
+            plr_color = "#10B981" if profit_loss_ratio >= 1.5 else "#F59E0B"
+            st.markdown(f'<div class="metric-box"><div class="metric-box-title">盈亏比 (P/L Ratio)</div><div class="metric-box-val" style="color:{plr_color}">{profit_loss_ratio:.2f} : 1</div></div>', unsafe_allow_html=True)
+
+        st.markdown("<div style='margin-top: 18px;'></div>", unsafe_allow_html=True)
+
+        st.subheader(f"📋 历史交易开平仓流水 ({total_trades} 笔)")
+        if round_trades:
+            df_trades = pd.DataFrame(round_trades)[["买入时间", "卖出时间", "开仓价", "平仓价", "展示收益率", "盈亏状态"]]
+            df_trades = df_trades.rename(columns={"展示收益率": "净收益率"})
+            st.write(df_trades.to_html(classes="table table-dark", index=False), unsafe_allow_html=True)
+        else:
+            st.info("在当前选定的 K 线数量内暂无已平仓交易轮次。")
+
+        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+        st.subheader("🌐 全市场实时信号扫描")
+        if market_summary:
+            df_sum = pd.DataFrame(market_summary)[["币种", "现价 ($)", "周期涨跌", "RSI(14)", "信号判定"]]
+            st.write(df_sum.to_html(classes="table table-dark", index=False), unsafe_allow_html=True)
+else:
+    st.warning("正在获取行情数据，请稍候...")
