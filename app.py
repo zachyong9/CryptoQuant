@@ -3,7 +3,6 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import os
-from datetime import datetime
 
 st.set_page_config(
     page_title="Crypto Radar - Web3 智能量化交易终端",
@@ -31,10 +30,11 @@ st.markdown("""
 
 DB_PATH = "paper_trading.db"
 
-# 数据库安全初始化与读取
 def init_and_get_data():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     c = conn.cursor()
+    
+    # 强制创建所有必需表
     c.execute('''CREATE TABLE IF NOT EXISTS account
                  (id INTEGER PRIMARY KEY, balance REAL, initial_balance REAL)''')
     c.execute('''CREATE TABLE IF NOT EXISTS positions
@@ -42,21 +42,31 @@ def init_and_get_data():
     c.execute('''CREATE TABLE IF NOT EXISTS trades
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT, coin TEXT, side TEXT, 
                   price REAL, amount REAL, cost REAL, realized_pnl REAL)''')
-    
-    # 检查 account 是否有记录
-    c.execute("SELECT balance, initial_balance FROM account WHERE id = 1")
-    row = c.fetchone()
-    if not row:
-        c.execute("INSERT INTO account (id, balance, initial_balance) VALUES (1, 100000.0, 100000.0)")
-        conn.commit()
+    conn.commit()
+
+    try:
+        c.execute("SELECT balance, initial_balance FROM account WHERE id = 1")
+        row = c.fetchone()
+        if not row:
+            c.execute("INSERT INTO account (id, balance, initial_balance) VALUES (1, 100000.0, 100000.0)")
+            conn.commit()
+            balance, init_balance = 100000.0, 100000.0
+        else:
+            balance, init_balance = row[0], row[1]
+    except Exception:
         balance, init_balance = 100000.0, 100000.0
-    else:
-        balance, init_balance = row[0], row[1]
         
-    pos = pd.read_sql("SELECT * FROM positions", conn)
-    trades = pd.read_sql("SELECT * FROM trades ORDER BY id DESC LIMIT 10", conn)
+    try:
+        pos = pd.read_sql("SELECT * FROM positions", conn)
+    except Exception:
+        pos = pd.DataFrame(columns=["coin", "amount", "avg_cost", "updated_at"])
+        
+    try:
+        trades = pd.read_sql("SELECT * FROM trades ORDER BY id DESC LIMIT 10", conn)
+    except Exception:
+        trades = pd.DataFrame(columns=["id", "time", "coin", "side", "price", "amount", "cost", "realized_pnl"])
+        
     conn.close()
-    
     return {"balance": balance, "initial_balance": init_balance}, pos, trades
 
 acc, pos, trades = init_and_get_data()
@@ -125,4 +135,4 @@ with right_col:
         st.info("暂无历史成交记录。")
 
 st.divider()
-st.markdown("👈 **请在左侧侧边栏切换子页面**：\n* **`Market Quant`**：全市场主流币多因子指标分析与策略绩效回测\n* **`Onchain Radar`**：EVM 巨鲸大额追踪与智能合约防貔貅安全审计")
+st.markdown("👈 **请在左侧侧边栏切换子页面**：\n* **`1_Market_Quant`**：全市场主流币多因子指标分析与策略绩效回测\n* **`2_Onchain_Radar`**：EVM 巨鲸大额追踪与智能合约防貔貅安全审计")
