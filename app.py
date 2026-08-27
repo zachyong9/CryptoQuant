@@ -2,6 +2,7 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
+import os
 from datetime import datetime
 
 st.set_page_config(
@@ -28,9 +29,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 数据库初始化
-def init_db():
-    conn = sqlite3.connect('paper_trading.db')
+DB_PATH = "paper_trading.db"
+
+# 数据库安全初始化与读取
+def init_and_get_data():
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS account
                  (id INTEGER PRIMARY KEY, balance REAL, initial_balance REAL)''')
@@ -39,21 +42,24 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS trades
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT, coin TEXT, side TEXT, 
                   price REAL, amount REAL, cost REAL, realized_pnl REAL)''')
-    c.execute("INSERT OR IGNORE INTO account (id, balance, initial_balance) VALUES (1, 100000.0, 100000.0)")
-    conn.commit()
-    conn.close()
-
-init_db()
-
-def get_account_data():
-    conn = sqlite3.connect('paper_trading.db')
-    acc = pd.read_sql("SELECT * FROM account WHERE id = 1", conn).iloc[0]
+    
+    # 检查 account 是否有记录
+    c.execute("SELECT balance, initial_balance FROM account WHERE id = 1")
+    row = c.fetchone()
+    if not row:
+        c.execute("INSERT INTO account (id, balance, initial_balance) VALUES (1, 100000.0, 100000.0)")
+        conn.commit()
+        balance, init_balance = 100000.0, 100000.0
+    else:
+        balance, init_balance = row[0], row[1]
+        
     pos = pd.read_sql("SELECT * FROM positions", conn)
     trades = pd.read_sql("SELECT * FROM trades ORDER BY id DESC LIMIT 10", conn)
     conn.close()
-    return acc, pos, trades
+    
+    return {"balance": balance, "initial_balance": init_balance}, pos, trades
 
-acc, pos, trades = get_account_data()
+acc, pos, trades = init_and_get_data()
 
 st.title("⚡ Crypto Radar - Web3 智能量化交易终端")
 st.caption("集行情多因子监控、链上巨鲸雷达、智能合约安全审计与 24H 自动量化撮合于一体的全栈交易控制台")
@@ -68,7 +74,7 @@ with c1:
     </div>''', unsafe_allow_html=True)
 
 with c2:
-    holdings_count = len(pos[pos['amount'] > 0])
+    holdings_count = len(pos[pos['amount'] > 0]) if not pos.empty else 0
     st.markdown(f'''<div class="metric-box">
         <div style="color:#94a3b8;font-size:13px;">当前活跃持仓</div>
         <div style="font-size:24px;font-weight:700;">{holdings_count} <span style="font-size:14px;color:#94a3b8;">个币种</span></div>
@@ -76,7 +82,7 @@ with c2:
     </div>''', unsafe_allow_html=True)
 
 with c3:
-    total_trades = len(trades)
+    total_trades = len(trades) if not trades.empty else 0
     st.markdown(f'''<div class="metric-box">
         <div style="color:#94a3b8;font-size:13px;">历史撮合总笔数</div>
         <div style="font-size:24px;font-weight:700;">{total_trades} <span style="font-size:14px;color:#94a3b8;">笔</span></div>
@@ -119,4 +125,4 @@ with right_col:
         st.info("暂无历史成交记录。")
 
 st.divider()
-st.markdown("👈 **请在左侧侧边栏切换子页面**：\n* **`1_Market_Quant`**：全市场主流币多因子指标分析与策略绩效回测\n* **`2_Onchain_Radar`**：EVM 巨鲸大额追踪与智能合约防貔貅安全审计")
+st.markdown("👈 **请在左侧侧边栏切换子页面**：\n* **`Market Quant`**：全市场主流币多因子指标分析与策略绩效回测\n* **`Onchain Radar`**：EVM 巨鲸大额追踪与智能合约防貔貅安全审计")
